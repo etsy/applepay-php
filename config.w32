@@ -1,12 +1,12 @@
 // $Id$
 // vim:ft=javascript
 
-// If your extension references something external, use ARG_WITH
-// ARG_WITH("applepay", "for applepay support", "no");
-
-// Otherwise, use ARG_ENABLE
-// ARG_ENABLE("applepay", "enable applepay support", "no");
+ARG_WITH("applepay", "for applepay support", "no");
 
 if (PHP_APPLEPAY != "no") {
-    EXTENSION("applepay", "applepay.c");
+    if (CHECK_LIB("ssleay32.lib", "applepay") &&
+        CHECK_LIB("libeay32.lib", "applepay") &&
+        CHECK_LIB("crypt32.lib", "applepay")) {
+        EXTENSION("applepay", "applepay.c");
+    }
 }
