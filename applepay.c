@@ -447,45 +447,6 @@ static int _applepay_parse_ephemeral_pubkey(applepay_state_t *state) {
     return APPLEPAY_OK;
 }
 
-// Read message_digest from leaf_p7
-static int _applepay_read_message_digest(applepay_state_t *state, unsigned char **message_digest_str, size_t *message_digest_len) {
-    // Get message_digest from signer infos
-    STACK_OF(PKCS7_SIGNER_INFO) *stack_of_signer_infos;
-    PKCS7_SIGNER_INFO *signer_info;
-    ASN1_OCTET_STRING *message_digest;
-
-    // Get signer info
-    stack_of_signer_infos = PKCS7_get_signer_info(state->leaf_p7);
-    if (!stack_of_signer_infos) {
-        return APPLEPAY_ERROR_LEAF_CERT_MISSING_SIGNER_INFOS;
-    } else if (sk_PKCS7_SIGNER_INFO_num(stack_of_signer_infos) != 1) {
-        return APPLEPAY_ERROR_LEAF_CERT_WRONG_NUM_SIGNER_INFOS;
-    }
-    signer_info = sk_PKCS7_SIGNER_INFO_value(stack_of_signer_infos, 0);
-    if (!signer_info || !signer_info->auth_attr) {
-        return APPLEPAY_ERROR_LEAF_CERT_SIGNER_INFO_MISSING_AUTH_ATTR;
-    }
-
-    // Get message digest
-    message_digest = PKCS7_digest_from_attributes(signer_info->auth_attr);
-    if (!message_digest || !message_digest->data) {
-        return APPLEPAY_ERROR_LEAF_CERT_SIGNER_INFO_MISSING_MESSAGE_DIGEST;
-    }
-    *message_digest_str = message_digest->data;
-    *message_digest_len = message_digest->length;
-
-    // Ensure messageDigest algorithm == ECDSA-with-sha256
-    if (!(state->leaf_cert && state->leaf_cert->sig_alg
-        && state->leaf_cert->sig_alg->algorithm
-        && OBJ_obj2nid(state->leaf_cert->sig_alg->algorithm)
-        == NID_ecdsa_with_SHA256
-    )) {
-        return APPLEPAY_ERROR_LEAF_CERT_WRONG_ALGORITHM;
-    }
-
-    return APPLEPAY_OK;
-}
-
 // Return APPLEPAY_OK if oid exists in cert's extensions, else APPLEPAY_ERROR
 static int _applepay_check_cert_oid(X509 *cert, const char *oid, X509_EXTENSION **ret_ext) {
     char objbuf[80];
@@ -548,30 +509,58 @@ static int _applepay_verify_chain(applepay_state_t *state) {
     return rc;
 }
 
+// Verify that the PKCS7 signed data is actually signed by the leaf certificate
 static int _applepay_verify_signature(applepay_state_t *state) {
-    unsigned char digest[SHA256_DIGEST_LENGTH], *message_digest;
-    size_t message_digest_len;
-    SHA256_CTX context;
-    int rc = APPLEPAY_OK;
+    BIO *bio;
+    X509_STORE *store;
+    int rc;
+    int message_digest_alg_nid;
 
-    if ((rc = _applepay_read_message_digest(state, &message_digest, &message_digest_len)) != APPLEPAY_OK) {
-        return rc;
+    rc = APPLEPAY_OK;
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+    message_digest_alg_nid = state->leaf_cert ? X509_get_signature_nid(state->leaf_cert) : 0;
+#else
+    message_digest_alg_nid = (state->leaf_cert && state->leaf_cert->sig_alg && state->leaf_cert->sig_alg->algorithm) ?
+        OBJ_obj2nid(state->leaf_cert->sig_alg->algorithm) :
+        0;
+#endif
+
+    bio = BIO_new(BIO_s_mem());
+    store = X509_STORE_new();
+    if (!bio || !store) {
+        return APPLEPAY_ERROR_OUT_OF_MEM;
     }
 
-    SHA256_Init(&context);
-    SHA256_Update(&context, state->ephemeral_pubkey_text, state->ephemeral_pubkey_text_len);
-    SHA256_Update(&context, state->ciphertext, state->ciphertext_len);
-    SHA256_Update(&context, state->transaction_id, state->transaction_id_len);
-    SHA256_Final(digest, &context);
+    do {
+        // Ensure messageDigest algorithm == ECDSA-with-sha256
+        if (!state->leaf_cert || message_digest_alg_nid != NID_ecdsa_with_SHA256) {
+            rc = APPLEPAY_ERROR_LEAF_CERT_WRONG_ALGORITHM;
+            break;
+        }
 
-    // Compare calculated digest to message_digest
-    if (message_digest_len != SHA256_DIGEST_LENGTH
-        || memcmp(digest, message_digest, message_digest_len) != 0
-    ) {
-        return APPLEPAY_ERROR_SIGNATURE_NOT_VERIFIED;
-    }
+        BIO_write(bio, state->ephemeral_pubkey_text, state->ephemeral_pubkey_text_len);
+        BIO_write(bio, state->ciphertext, state->ciphertext_len);
+        BIO_write(bio, state->transaction_id, state->transaction_id_len);
 
-    return APPLEPAY_OK;
+        if (!X509_STORE_add_cert(store, state->root_cert)) {
+            rc = APPLEPAY_ERROR_COULD_NOT_ADD_ROOT_CERT_TO_STORE;
+            break;
+        }
+
+        if (!X509_STORE_add_cert(store, state->int_cert)) {
+            rc = APPLEPAY_ERROR_COULD_NOT_ADD_INT_CERT_TO_STORE;
+            break;
+        }
+
+        if (PKCS7_verify(state->leaf_p7, NULL, store, bio, NULL, PKCS7_NOCHAIN) != 1) {
+            rc = APPLEPAY_ERROR_SIGNATURE_NOT_VERIFIED;
+            break;
+        }
+    } while (0);
+
+    BIO_free_all(bio);
+    X509_STORE_free(store);
+    return rc;
 }
 
 // Verify signing time of certs in leaf chain
@@ -723,6 +712,8 @@ static int _applepay_generate_symkey(applepay_state_t *state) {
     SHA256_Update(&sha256, (char*)oinfo, oinfo_len);
     SHA256_Update(&sha256, (char*)merchid, merchid_len);
     SHA256_Final(state->sym_key, &sha256);
+
+    efree(merchid);
 
     return APPLEPAY_OK;
 }
