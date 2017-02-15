@@ -34,6 +34,7 @@
 #include <openssl/pkcs12.h>
 #include <openssl/err.h>
 #include <openssl/asn1.h>
+#include <openssl/opensslv.h>
 
 ZEND_DECLARE_MODULE_GLOBALS(applepay)
 
@@ -140,6 +141,7 @@ PHP_MINFO_FUNCTION(applepay)
     php_info_print_table_start();
     php_info_print_table_header(2, "applepay support", "enabled");
     php_info_print_table_header(2, "extension version", PHP_APPLEPAY_VERSION);
+    php_info_print_table_header(2, "OpenSSL version", SSLeay_version(SSLEAY_VERSION));
     php_info_print_table_end();
 }
 /* }}} */
