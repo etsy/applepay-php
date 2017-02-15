@@ -103,12 +103,21 @@ static void _applepay_init_globals(zend_applepay_globals *g)
  */
 PHP_MINIT_FUNCTION(applepay)
 {
+    int strlen_adjust;
+
     /** Init globals */
     ZEND_INIT_MODULE_GLOBALS(applepay, _applepay_init_globals, NULL);
 
+
+#if PHP_MAJOR_VERSION >= 7
+    strlen_adjust = 1;
+#else
+    strlen_adjust = 0;
+#endif
+
     /** Register constants */
     #define APPLEPAY_CONST_EXPAND(c) \
-        zend_register_long_constant(#c, sizeof(#c), c, CONST_CS | CONST_PERSISTENT, module_number TSRMLS_CC);
+        zend_register_long_constant(#c, sizeof(#c)-strlen_adjust, c, CONST_CS | CONST_PERSISTENT, module_number TSRMLS_CC);
     #include "constants.h"
     #undef APPLEPAY_CONST_EXPAND
 
@@ -290,25 +299,58 @@ static int _applepay_read_signature(const char *signature_b64, applepay_state_t 
     return APPLEPAY_OK;
 }
 
+// PHP 5/7 compat version of zend_hash_find
+static int zend_hash_find_compat(HashTable *ht, char *key, int keylen, zval **zret) {
+#if PHP_MAJOR_VERSION >= 7
+    zend_string *keystr = zend_string_init(key, keylen, 0);
+    *zret = zend_hash_find(ht, keystr);
+    zend_string_release(keystr);
+    return *zret != NULL ? SUCCESS : FAILURE;
+#else
+    int retval;
+    zval **ztmp = NULL;
+    retval = zend_hash_find(ht, key, keylen+1, (void**)&ztmp);
+    *zret = *ztmp;
+    return retval;
+#endif
+}
+
 // Extract array keys of `z_cryptogram` into `state`
 static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *state) {
     HashTable *ht_cryptogram = NULL;
     HashTable *ht_header = NULL;
-    zval **z_data = NULL;
-    zval **z_header = NULL;
-    zval **z_signature = NULL;
-    zval **z_version = NULL;
-    zval **z_ephemeralPublicKey = NULL;
-    zval **z_publicKeyHash = NULL;
-    zval **z_transactionId = NULL;
+    zval *z_data = NULL;
+    zval *z_header = NULL;
+    zval *z_signature = NULL;
+    zval *z_version = NULL;
+    zval *z_ephemeralPublicKey = NULL;
+    zval *z_publicKeyHash = NULL;
+    zval *z_transactionId = NULL;
+#if PHP_MAJOR_VERSION >= 7
+    zval z_data_stack;
+    zval z_header_stack;
+    zval z_signature_stack;
+    zval z_version_stack;
+    zval z_ephemeralPublicKey_stack;
+    zval z_publicKeyHash_stack;
+    zval z_transactionId_stack;
+    z_data = &z_data_stack;
+    z_header = &z_header_stack;
+    z_signature = &z_signature_stack;
+    z_version = &z_version_stack;
+    z_ephemeralPublicKey = &z_ephemeralPublicKey_stack;
+    z_publicKeyHash = &z_publicKeyHash_stack;
+    z_transactionId = &z_transactionId_stack;
+#endif
+
     int rc = APPLEPAY_OK;
 
     do {
         #define APPLEPAY_PARSE_CRYPTOGRAM_STRKEY(HT, KEYNAME, KEYERR) do { \
-            if (zend_hash_find(HT, #KEYNAME, sizeof(#KEYNAME), (void**)&z_ ## KEYNAME) != SUCCESS) { \
+            if (zend_hash_find_compat(HT, #KEYNAME, sizeof(#KEYNAME)-1, &z_ ## KEYNAME) != SUCCESS) { \
                 return KEYERR; \
             } \
-            convert_to_string(*z_ ## KEYNAME); \
+            convert_to_string(z_ ## KEYNAME); \
         } while (0)
 
         // Get cryptogram hash
@@ -320,18 +362,18 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
         APPLEPAY_PARSE_CRYPTOGRAM_STRKEY(ht_cryptogram, version, APPLEPAY_ERROR_MISSING_VERSION_KEY);
 
         // Ensure correct version
-        if (strcmp(Z_STRVAL_PP(z_version), "EC_v1") != 0) {
+        if (strcmp(Z_STRVAL_P(z_version), "EC_v1") != 0) {
             rc = APPLEPAY_ERROR_WRONG_VERSION;
             break;
         }
 
         // Get header hash
-        if (zend_hash_find(ht_cryptogram, "header", sizeof("header"), (void**)&z_header) != SUCCESS) {
+        if (zend_hash_find_compat(ht_cryptogram, "header", sizeof("header")-1, &z_header) != SUCCESS) {
             rc = APPLEPAY_ERROR_MISSING_HEADER_KEY;
             break;
         }
-        convert_to_array(*z_header);
-        ht_header = HASH_OF(*z_header);
+        convert_to_array(z_header);
+        ht_header = HASH_OF(z_header);
 
         // Get ephemeralPublicKey, publicKeyHash, and transactionId keys
         APPLEPAY_PARSE_CRYPTOGRAM_STRKEY(ht_header, ephemeralPublicKey, APPLEPAY_ERROR_MISSING_EPHEMERAL_PUBKEY_KEY);
@@ -340,26 +382,26 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
         #undef APPLEPAY_PARSE_CRYPTOGRAM_STRKEY
 
         // Base64 decode stuff
-        if (_applepay_b64_decode(Z_STRVAL_PP(z_data), Z_STRLEN_PP(z_data), &state->ciphertext, &state->ciphertext_len) != APPLEPAY_OK) {
+        if (_applepay_b64_decode(Z_STRVAL_P(z_data), Z_STRLEN_P(z_data), &state->ciphertext, &state->ciphertext_len) != APPLEPAY_OK) {
             rc = APPLEPAY_ERROR_COULD_NOT_B64DECODE_CIPHERTEXT;
             break;
         }
-        if (_applepay_b64_decode(Z_STRVAL_PP(z_publicKeyHash), Z_STRLEN_PP(z_publicKeyHash), &state->pubkey_hash, &state->pubkey_hash_len) != APPLEPAY_OK) {
+        if (_applepay_b64_decode(Z_STRVAL_P(z_publicKeyHash), Z_STRLEN_P(z_publicKeyHash), &state->pubkey_hash, &state->pubkey_hash_len) != APPLEPAY_OK) {
             rc = APPLEPAY_ERROR_COULD_NOT_B64DECODE_PUBKEY_HASH;
             break;
         }
-        if (_applepay_b64_decode(Z_STRVAL_PP(z_ephemeralPublicKey), Z_STRLEN_PP(z_ephemeralPublicKey), &state->ephemeral_pubkey_text, &state->ephemeral_pubkey_text_len) != APPLEPAY_OK) {
+        if (_applepay_b64_decode(Z_STRVAL_P(z_ephemeralPublicKey), Z_STRLEN_P(z_ephemeralPublicKey), &state->ephemeral_pubkey_text, &state->ephemeral_pubkey_text_len) != APPLEPAY_OK) {
             rc = APPLEPAY_ERROR_COULD_NOT_B64DECODE_EPHEMERAL_PUBKEY;
             break;
         }
 
         // Hex decode transaction_id_hex
-        if (_applepay_hex_string_to_binary(Z_STRVAL_PP(z_transactionId), &state->transaction_id, &state->transaction_id_len) != APPLEPAY_OK) {
+        if (_applepay_hex_string_to_binary(Z_STRVAL_P(z_transactionId), &state->transaction_id, &state->transaction_id_len) != APPLEPAY_OK) {
             rc = APPLEPAY_ERROR_COULD_NOT_HEXDECODE_TRANSACTION_ID;
             break;
         }
 
-        if ((rc = _applepay_read_signature(Z_STRVAL_PP(z_signature), state)) != APPLEPAY_OK) {
+        if ((rc = _applepay_read_signature(Z_STRVAL_P(z_signature), state)) != APPLEPAY_OK) {
             break;
         }
     } while (0);
@@ -782,18 +824,6 @@ static int _applepay_decrypt_ciphertext(applepay_state_t *state, char **decrypte
 }
 
 static void _applepay_cleanup_state(applepay_state_t *state) {
-    /*
-    typedef struct {
-        >>> So do these
-        unsigned char *ciphertext;
-        int            ciphertext_len;
-        unsigned char *pubkey_hash;
-        int            pubkey_hash_len;
-        unsigned char *transaction_id;
-        int            transaction_id_len;
-        unsigned char *secret;
-        size_t         secret_len;
-    */
     if (state->ciphertext) efree(state->ciphertext);
     if (state->pubkey_hash) efree(state->pubkey_hash);
     if (state->ephemeral_pubkey_text) efree(state->ephemeral_pubkey_text);
@@ -802,25 +832,7 @@ static void _applepay_cleanup_state(applepay_state_t *state) {
         OPENSSL_cleanse(state->secret, state->secret_len);
         efree(state->secret);
     }
-    /*
-        >>> Not these
-        unsigned char sym_key[SHA256_DIGEST_LENGTH];
-    */
     OPENSSL_cleanse(state->sym_key, SHA256_DIGEST_LENGTH);
-
-    /*
-        >>> Yes these
-        EVP_PKEY *merch_pubkey;
-        EVP_PKEY *merch_privkey;
-        EVP_PKEY *ephemeral_pubkey;
-        X509 *merch_cert;
-        X509 *int_cert;
-        X509 *root_cert;
-        X509 *leaf_cert;
-        PKCS7 *leaf_p7;
-        STACK_OF(X509) *leaf_chain;
-    } applepay_state_t;
-    */
 
     if (state->merch_pubkey) EVP_PKEY_free(state->merch_pubkey);
     if (state->merch_privkey) EVP_PKEY_free(state->merch_privkey);
@@ -949,8 +961,13 @@ PHP_FUNCTION(applepay_verify_and_decrypt)
     // TODO Eat japanese curry with klee
 
     // Return decrypted payload
+#if PHP_MAJOR_VERSION >= 7
+    RETVAL_STRINGL(decrypted, decrypted_len);
+    efree(decrypted);
+#else
     // `decrypted` was emalloc'd in _applepay_decrypt_ciphertext so no need to copy
     RETURN_STRINGL(decrypted, decrypted_len, 0);
+#endif
 }
 
 /* {{{ proto int applepay_last_error(void)
