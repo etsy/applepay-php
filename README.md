@@ -59,7 +59,6 @@ If everything goes well you should see decrypted payment data.
 ### Future work
 
 * Split up library into libapplepay and a PHP wrapper
-* PHP7 compatibility
 * HHVM port
 
 [1] https://developer.apple.com/library/prerelease/ios/documentation/PassKit/Reference/PaymentTokenJSON/PaymentTokenJSON.html
