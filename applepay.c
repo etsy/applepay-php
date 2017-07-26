@@ -147,6 +147,8 @@ PHP_MINFO_FUNCTION(applepay)
 /* }}} */
 
 // All shared state for applepay_verify_and_decrypt and friends
+#define APPLEPAY_TYPE_ECC 0
+#define APPLEPAY_TYPE_RSA 1
 typedef struct {
     unsigned char *ciphertext;
     size_t         ciphertext_len;
@@ -154,11 +156,14 @@ typedef struct {
     size_t         pubkey_hash_len;
     unsigned char *ephemeral_pubkey_text;
     size_t         ephemeral_pubkey_text_len;
+    unsigned char *wrapped_key_text;
+    size_t         wrapped_key_text_len;
     unsigned char *transaction_id;
     size_t         transaction_id_len;
     unsigned char *secret;
     size_t         secret_len;
-    unsigned char sym_key[SHA256_DIGEST_LENGTH];
+    unsigned char *sym_key;
+    size_t         sym_key_len;
     EVP_PKEY *merch_pubkey;
     EVP_PKEY *merch_privkey;
     EVP_PKEY *ephemeral_pubkey;
@@ -168,6 +173,7 @@ typedef struct {
     X509 *leaf_cert;
     PKCS7 *leaf_p7;
     STACK_OF(X509) *leaf_chain;
+    int type; // APPLEPAY_TYPE_*
 } applepay_state_t;
 
 // General base64_decode func
@@ -326,6 +332,7 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
     zval *z_signature = NULL;
     zval *z_version = NULL;
     zval *z_ephemeralPublicKey = NULL;
+    zval *z_wrappedKey = NULL;
     zval *z_publicKeyHash = NULL;
     zval *z_transactionId = NULL;
 #if PHP_MAJOR_VERSION >= 7
@@ -334,6 +341,7 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
     zval z_signature_stack;
     zval z_version_stack;
     zval z_ephemeralPublicKey_stack;
+    zval z_wrappedKey_stack;
     zval z_publicKeyHash_stack;
     zval z_transactionId_stack;
     z_data = &z_data_stack;
@@ -341,6 +349,7 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
     z_signature = &z_signature_stack;
     z_version = &z_version_stack;
     z_ephemeralPublicKey = &z_ephemeralPublicKey_stack;
+    z_wrappedKey = &z_wrappedKey_stack;
     z_publicKeyHash = &z_publicKeyHash_stack;
     z_transactionId = &z_transactionId_stack;
 #endif
@@ -364,7 +373,11 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
         APPLEPAY_PARSE_CRYPTOGRAM_STRKEY(ht_cryptogram, version, APPLEPAY_ERROR_MISSING_VERSION_KEY);
 
         // Ensure correct version
-        if (strcmp(Z_STRVAL_P(z_version), "EC_v1") != 0) {
+        if (strcmp(Z_STRVAL_P(z_version), "EC_v1") == 0) {
+            state->type = APPLEPAY_TYPE_ECC;
+        } else if (strcmp(Z_STRVAL_P(z_version), "RSA_v1") == 0) {
+            state->type = APPLEPAY_TYPE_RSA;
+        } else {
             rc = APPLEPAY_ERROR_WRONG_VERSION;
             break;
         }
@@ -377,8 +390,12 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
         convert_to_array(z_header);
         ht_header = HASH_OF(z_header);
 
-        // Get ephemeralPublicKey, publicKeyHash, and transactionId keys
-        APPLEPAY_PARSE_CRYPTOGRAM_STRKEY(ht_header, ephemeralPublicKey, APPLEPAY_ERROR_MISSING_EPHEMERAL_PUBKEY_KEY);
+        // Get (wrappedKey OR ephemeralPublicKey), publicKeyHash, and transactionId keys
+        if (state->type == APPLEPAY_TYPE_ECC) {
+            APPLEPAY_PARSE_CRYPTOGRAM_STRKEY(ht_header, ephemeralPublicKey, APPLEPAY_ERROR_MISSING_EPHEMERAL_PUBKEY_KEY);
+        } else {
+            APPLEPAY_PARSE_CRYPTOGRAM_STRKEY(ht_header, wrappedKey, APPLEPAY_ERROR_MISSING_WRAPPED_KEY);
+        }
         APPLEPAY_PARSE_CRYPTOGRAM_STRKEY(ht_header, publicKeyHash, APPLEPAY_ERROR_MISSING_PUBKEY_HASH_KEY);
         APPLEPAY_PARSE_CRYPTOGRAM_STRKEY(ht_header, transactionId, APPLEPAY_ERROR_MISSING_TRANSACTION_ID_KEY);
         #undef APPLEPAY_PARSE_CRYPTOGRAM_STRKEY
@@ -392,9 +409,16 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
             rc = APPLEPAY_ERROR_COULD_NOT_B64DECODE_PUBKEY_HASH;
             break;
         }
-        if (_applepay_b64_decode(Z_STRVAL_P(z_ephemeralPublicKey), Z_STRLEN_P(z_ephemeralPublicKey), &state->ephemeral_pubkey_text, &state->ephemeral_pubkey_text_len) != APPLEPAY_OK) {
-            rc = APPLEPAY_ERROR_COULD_NOT_B64DECODE_EPHEMERAL_PUBKEY;
-            break;
+        if (state->type == APPLEPAY_TYPE_ECC) {
+            if (_applepay_b64_decode(Z_STRVAL_P(z_ephemeralPublicKey), Z_STRLEN_P(z_ephemeralPublicKey), &state->ephemeral_pubkey_text, &state->ephemeral_pubkey_text_len) != APPLEPAY_OK) {
+                rc = APPLEPAY_ERROR_COULD_NOT_B64DECODE_EPHEMERAL_PUBKEY;
+                break;
+            }
+        } else {
+            if (_applepay_b64_decode(Z_STRVAL_P(z_wrappedKey), Z_STRLEN_P(z_wrappedKey), &state->wrapped_key_text, &state->wrapped_key_text_len) != APPLEPAY_OK) {
+                rc = APPLEPAY_ERROR_COULD_NOT_B64DECODE_WRAPPED_KEY;
+                break;
+            }
         }
 
         // Hex decode transaction_id_hex
@@ -557,6 +581,8 @@ static int _applepay_verify_chain(applepay_state_t *state) {
 static int _applepay_verify_signature(applepay_state_t *state) {
     BIO *bio;
     X509_STORE *store;
+    X509_PUBKEY *leaf_pub_key;
+    ASN1_OBJECT *pkalg;
     int rc;
     int message_digest_alg_nid;
 
@@ -577,12 +603,31 @@ static int _applepay_verify_signature(applepay_state_t *state) {
 
     do {
         // Ensure messageDigest algorithm == ECDSA-with-sha256
+        // TODO Why is this not NID_sha256WithRSAEncryption for APPLEPAY_TYPE_RSA?
         if (!state->leaf_cert || message_digest_alg_nid != NID_ecdsa_with_SHA256) {
             rc = APPLEPAY_ERROR_LEAF_CERT_WRONG_ALGORITHM;
             break;
         }
 
-        BIO_write(bio, state->ephemeral_pubkey_text, state->ephemeral_pubkey_text_len);
+        // Ensure correct pub key algorithm
+        if (NULL == (leaf_pub_key = X509_get_X509_PUBKEY(state->leaf_cert))) {
+            rc = APPLEPAY_ERROR_COULD_NOT_GET_LEAF_PUBKEY;
+            break;
+        }
+        if (1 != X509_PUBKEY_get0_param(&pkalg, NULL, NULL, NULL, leaf_pub_key)) {
+            rc = APPLEPAY_ERROR_COULD_NOT_GET_LEAF_PUBKEY_ALGORITHM;
+            break;
+        }
+        if (OBJ_obj2nid(pkalg) != (state->type == APPLEPAY_TYPE_ECC ? NID_X9_62_id_ecPublicKey : NID_rsaEncryption)) {
+            rc = APPLEPAY_ERROR_LEAF_CERT_WRONG_PUBKEY_ALGORITHM;
+        }
+
+        // Ensure signature is correct
+        if (state->type == APPLEPAY_TYPE_ECC) {
+            BIO_write(bio, state->ephemeral_pubkey_text, state->ephemeral_pubkey_text_len);
+        } else {
+            BIO_write(bio, state->wrapped_key_text, state->wrapped_key_text_len);
+        }
         BIO_write(bio, state->ciphertext, state->ciphertext_len);
         BIO_write(bio, state->transaction_id, state->transaction_id_len);
 
@@ -682,7 +727,7 @@ static int _applepay_generate_secret(applepay_state_t *state) {
     if (NULL == (ctx = EVP_PKEY_CTX_new(state->merch_privkey, NULL)))
         return APPLEPAY_ERROR_COULD_NOT_CREATE_SECRET_CTX;
 
-    // Initialise
+    // Initialize
     if (1 != EVP_PKEY_derive_init(ctx))
         return APPLEPAY_ERROR_COULD_NOT_INIT_SECRET_CTX;
 
@@ -701,6 +746,43 @@ static int _applepay_generate_secret(applepay_state_t *state) {
     // Derive the shared secret
     if (1 != (EVP_PKEY_derive(ctx, state->secret, &state->secret_len)))
         return APPLEPAY_ERROR_COULD_NOT_DERIVE_SECRET;
+
+    EVP_PKEY_CTX_free(ctx);
+
+    return APPLEPAY_OK;
+}
+
+// Decrypt symmetric key from wrappedKey
+static int _applepay_decrypt_symkey(applepay_state_t *state) {
+    EVP_PKEY_CTX *ctx;
+
+    // Create the context for the shared secret derivation
+    if (NULL == (ctx = EVP_PKEY_CTX_new(state->merch_privkey, NULL)))
+        return APPLEPAY_ERROR_COULD_NOT_CREATE_DECRYPT_CTX;
+
+    // Initialize
+    if (1 != EVP_PKEY_decrypt_init(ctx))
+        return APPLEPAY_ERROR_COULD_NOT_INIT_DECRYPT_CTX;
+
+    // Set 'RSA/ECB/OAEPWithSHA256AndMGF1Padding' alg
+    if (1 != EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING))
+        return APPLEPAY_ERROR_COULD_NOT_CONFIG_DECRYPT_CTX;
+    if (1 != EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, EVP_sha256()))
+        return APPLEPAY_ERROR_COULD_NOT_CONFIG_DECRYPT_CTX;
+    if (1 != EVP_PKEY_CTX_set_rsa_oaep_md(ctx, EVP_sha256()))
+        return APPLEPAY_ERROR_COULD_NOT_CONFIG_DECRYPT_CTX;
+
+    // Get sym_key_len
+    if (1 != EVP_PKEY_decrypt(ctx, NULL, &state->sym_key_len, state->wrapped_key_text, state->wrapped_key_text_len))
+        return APPLEPAY_ERROR_COULD_NOT_GET_SYMKEY_LEN;
+
+    // Allocate sym_key
+    if (NULL == (state->sym_key = emalloc(state->sym_key_len)))
+        return APPLEPAY_ERROR_COULD_NOT_ALLOCATE_SYMKEY;
+
+    // Actually decrypt
+    if (1 != EVP_PKEY_decrypt(ctx, state->sym_key, &state->sym_key_len, state->wrapped_key_text, state->wrapped_key_text_len))
+        return APPLEPAY_ERROR_COULD_NOT_DECRYPT_WRAPPED_KEY;
 
     EVP_PKEY_CTX_free(ctx);
 
@@ -748,6 +830,11 @@ static int _applepay_generate_symkey(applepay_state_t *state) {
          return rc;
     }
 
+    if (NULL == (state->sym_key = emalloc(SHA256_DIGEST_LENGTH))) {
+        return APPLEPAY_ERROR_COULD_NOT_ALLOCATE_SYMKEY;
+    }
+    state->sym_key_len = SHA256_DIGEST_LENGTH;
+
     oinfo_len = snprintf(oinfo, 128, "%c%sApple", 0x0d, "id-aes256-GCM");
 
     SHA256_Init(&sha256);
@@ -765,6 +852,7 @@ static int _applepay_generate_symkey(applepay_state_t *state) {
 // Decrypt ciphertext using sym_key
 static int _applepay_decrypt_ciphertext(applepay_state_t *state, char **decrypted, int *decrypted_len) {
     EVP_CIPHER_CTX ctx;
+    const EVP_CIPHER *cipher;
     unsigned char init_vector[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     unsigned char *decrypted_cur = NULL;
     int outlen;
@@ -775,7 +863,12 @@ static int _applepay_decrypt_ciphertext(applepay_state_t *state, char **decrypte
     rc = APPLEPAY_OK;
     do {
         // Select cipher
-        if (EVP_DecryptInit(&ctx, EVP_aes_256_gcm(), NULL, NULL) != 1) {
+        if (state->type == APPLEPAY_TYPE_ECC) {
+            cipher = EVP_aes_256_gcm();
+        } else {
+            cipher = EVP_aes_128_gcm();
+        }
+        if (EVP_DecryptInit(&ctx, cipher, NULL, NULL) != 1) {
             rc = APPLEPAY_ERROR_FAILED_TO_INIT_DECRYPT;
             break;
         }
@@ -809,7 +902,7 @@ static int _applepay_decrypt_ciphertext(applepay_state_t *state, char **decrypte
         // Set expected tag value
         EVP_CIPHER_CTX_ctrl(&ctx, EVP_CTRL_GCM_SET_TAG, 16, state->ciphertext + state->ciphertext_len - 16);
 
-        // Finalise: note get no output for GCM
+        // Finalize: note get no output for GCM
         if (EVP_DecryptFinal_ex(&ctx, decrypted_cur, &outlen) != 1) {
             rc = APPLEPAY_ERROR_FAILED_TO_DECRYPT;
             break;
@@ -829,12 +922,16 @@ static void _applepay_cleanup_state(applepay_state_t *state) {
     if (state->ciphertext) efree(state->ciphertext);
     if (state->pubkey_hash) efree(state->pubkey_hash);
     if (state->ephemeral_pubkey_text) efree(state->ephemeral_pubkey_text);
+    if (state->wrapped_key_text) efree(state->wrapped_key_text);
     if (state->transaction_id) efree(state->transaction_id);
     if (state->secret) {
         OPENSSL_cleanse(state->secret, state->secret_len);
         efree(state->secret);
     }
-    OPENSSL_cleanse(state->sym_key, SHA256_DIGEST_LENGTH);
+    if (state->sym_key) {
+        OPENSSL_cleanse(state->sym_key, state->sym_key_len);
+        efree(state->sym_key);
+    }
 
     if (state->merch_pubkey) EVP_PKEY_free(state->merch_pubkey);
     if (state->merch_privkey) EVP_PKEY_free(state->merch_privkey);
@@ -916,8 +1013,10 @@ PHP_FUNCTION(applepay_verify_and_decrypt)
         if ((rc = _applepay_read_merch_privkey(merch_privkey_b64, merch_privkey_b64_len, merch_privkey_pass, &state)) != APPLEPAY_OK) {
             break;
         }
-        if ((rc = _applepay_parse_ephemeral_pubkey(&state)) != APPLEPAY_OK) {
-            break;
+        if (state.type == APPLEPAY_TYPE_ECC) {
+            if ((rc = _applepay_parse_ephemeral_pubkey(&state)) != APPLEPAY_OK) {
+                break;
+            }
         }
         if ((rc = _applepay_check_cert_oid(state.leaf_cert, "1.2.840.113635.100.6.29", NULL)) != APPLEPAY_OK) { // Step 1a
             rc = APPLEPAY_ERROR_LEAF_CERT_MISSING_OID;
@@ -939,13 +1038,19 @@ PHP_FUNCTION(applepay_verify_and_decrypt)
         if ((rc = _applepay_verify_pubkey_hash(&state)) != APPLEPAY_OK) { // Step 2
             break;
         }
-        if ((rc = _applepay_generate_secret(&state)) != APPLEPAY_OK) { // Step 3
-            break;
+        if (state.type == APPLEPAY_TYPE_ECC) {
+            if ((rc = _applepay_generate_secret(&state)) != APPLEPAY_OK) { // Step 3
+                break;
+            }
+            if ((rc = _applepay_generate_symkey(&state)) != APPLEPAY_OK) { // Step 3
+                break;
+            }
+        } else {
+            if ((rc = _applepay_decrypt_symkey(&state)) != APPLEPAY_OK) { // Step 3
+                break;
+            }
         }
-        if ((rc = _applepay_generate_symkey(&state)) != APPLEPAY_OK) { // Step 4
-            break;
-        }
-        if ((rc = _applepay_decrypt_ciphertext(&state, &decrypted, &decrypted_len)) != APPLEPAY_OK) { // Step 5
+        if ((rc = _applepay_decrypt_ciphertext(&state, &decrypted, &decrypted_len)) != APPLEPAY_OK) { // Step 4
             break;
         }
     } while (0);
