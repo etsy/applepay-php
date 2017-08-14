@@ -722,70 +722,103 @@ static int _applepay_verify_pubkey_hash(applepay_state_t *state) {
 
 // Generate shared secret
 static int _applepay_generate_secret(applepay_state_t *state) {
+    int rc;
     EVP_PKEY_CTX *ctx;
 
-    // Create the context for the shared secret derivation
-    if (NULL == (ctx = EVP_PKEY_CTX_new(state->merch_privkey, NULL)))
-        return APPLEPAY_ERROR_COULD_NOT_CREATE_SECRET_CTX;
+    rc = APPLEPAY_OK;
+    ctx = NULL;
+    do {
+        // Create the context for the shared secret derivation
+        if (NULL == (ctx = EVP_PKEY_CTX_new(state->merch_privkey, NULL))) {
+            rc = APPLEPAY_ERROR_COULD_NOT_CREATE_SECRET_CTX;
+            break;
+        }
 
-    // Initialize
-    if (1 != EVP_PKEY_derive_init(ctx))
-        return APPLEPAY_ERROR_COULD_NOT_INIT_SECRET_CTX;
+        // Initialize
+        if (1 != EVP_PKEY_derive_init(ctx)) {
+            rc = APPLEPAY_ERROR_COULD_NOT_INIT_SECRET_CTX;
+            break;
+        }
 
-    // Provide the peer public key
-    if (1 != EVP_PKEY_derive_set_peer(ctx, state->ephemeral_pubkey))
-        return APPLEPAY_ERROR_COULD_NOT_SET_SECRET_CTX_PEERKEY;
+        // Provide the peer public key
+        if (1 != EVP_PKEY_derive_set_peer(ctx, state->ephemeral_pubkey)) {
+            rc = APPLEPAY_ERROR_COULD_NOT_SET_SECRET_CTX_PEERKEY;
+            break;
+        }
 
-    // Determine buffer length for shared secret
-    if (1 != EVP_PKEY_derive(ctx, NULL, &state->secret_len))
-        return APPLEPAY_ERROR_COULD_NOT_DERIVE_BUFLEN;
+        // Determine buffer length for shared secret
+        if (1 != EVP_PKEY_derive(ctx, NULL, &state->secret_len)) {
+            rc = APPLEPAY_ERROR_COULD_NOT_DERIVE_BUFLEN;
+            break;
+        }
 
-    // Create the buffer
-    if (NULL == (state->secret = emalloc(state->secret_len)))
-        return APPLEPAY_ERROR_COULD_NOT_CREATE_SECRET_BUF;
+        // Create the buffer (freed in _applepay_cleanup_state)
+        if (NULL == (state->secret = emalloc(state->secret_len))) {
+            rc = APPLEPAY_ERROR_COULD_NOT_CREATE_SECRET_BUF;
+            break;
+        }
 
-    // Derive the shared secret
-    if (1 != (EVP_PKEY_derive(ctx, state->secret, &state->secret_len)))
-        return APPLEPAY_ERROR_COULD_NOT_DERIVE_SECRET;
+        // Derive the shared secret
+        if (1 != (EVP_PKEY_derive(ctx, state->secret, &state->secret_len))) {
+            rc = APPLEPAY_ERROR_COULD_NOT_DERIVE_SECRET;
+            break;
+        }
+    } while (0);
 
-    EVP_PKEY_CTX_free(ctx);
+    if (ctx) EVP_PKEY_CTX_free(ctx);
 
-    return APPLEPAY_OK;
+    return rc;
 }
 
 // Decrypt symmetric key from wrappedKey
 static int _applepay_decrypt_symkey(applepay_state_t *state) {
+    int rc;
     EVP_PKEY_CTX *ctx;
 
-    // Create the context for the shared secret derivation
-    if (NULL == (ctx = EVP_PKEY_CTX_new(state->merch_privkey, NULL)))
-        return APPLEPAY_ERROR_COULD_NOT_CREATE_DECRYPT_CTX;
+    rc = APPLEPAY_OK;
+    ctx = NULL;
+    do {
+        // Create the context for the shared secret derivation
+        if (NULL == (ctx = EVP_PKEY_CTX_new(state->merch_privkey, NULL))) {
+            rc = APPLEPAY_ERROR_COULD_NOT_CREATE_DECRYPT_CTX;
+            break;
+        }
 
-    // Initialize
-    if (1 != EVP_PKEY_decrypt_init(ctx))
-        return APPLEPAY_ERROR_COULD_NOT_INIT_DECRYPT_CTX;
+        // Initialize
+        if (1 != EVP_PKEY_decrypt_init(ctx)) {
+            rc = APPLEPAY_ERROR_COULD_NOT_INIT_DECRYPT_CTX;
+            break;
+        }
 
-    // Set 'RSA/ECB/OAEPWithSHA256AndMGF1Padding' alg
-    if (1 != EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING))
-        return APPLEPAY_ERROR_COULD_NOT_CONFIG_DECRYPT_CTX;
-    if (1 != EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, EVP_sha256()))
-        return APPLEPAY_ERROR_COULD_NOT_CONFIG_DECRYPT_CTX;
-    if (1 != EVP_PKEY_CTX_set_rsa_oaep_md(ctx, EVP_sha256()))
-        return APPLEPAY_ERROR_COULD_NOT_CONFIG_DECRYPT_CTX;
+        // Set 'RSA/ECB/OAEPWithSHA256AndMGF1Padding' alg
+        if (1 != EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING)
+            || 1 != EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, EVP_sha256())
+            || 1 != EVP_PKEY_CTX_set_rsa_oaep_md(ctx, EVP_sha256())
+        ) {
+            rc = APPLEPAY_ERROR_COULD_NOT_CONFIG_DECRYPT_CTX;
+            break;
+        }
 
-    // Get sym_key_len
-    if (1 != EVP_PKEY_decrypt(ctx, NULL, &state->sym_key_len, state->wrapped_key_text, state->wrapped_key_text_len))
-        return APPLEPAY_ERROR_COULD_NOT_GET_SYMKEY_LEN;
+        // Get sym_key_len
+        if (1 != EVP_PKEY_decrypt(ctx, NULL, &state->sym_key_len, state->wrapped_key_text, state->wrapped_key_text_len)) {
+            rc = APPLEPAY_ERROR_COULD_NOT_GET_SYMKEY_LEN;
+            break;
+        }
 
-    // Allocate sym_key
-    if (NULL == (state->sym_key = emalloc(state->sym_key_len)))
-        return APPLEPAY_ERROR_COULD_NOT_ALLOCATE_SYMKEY;
+        // Allocate sym_key (freed in _applepay_cleanup_state)
+        if (NULL == (state->sym_key = emalloc(state->sym_key_len))) {
+            rc = APPLEPAY_ERROR_COULD_NOT_ALLOCATE_SYMKEY;
+            break;
+        }
 
-    // Actually decrypt
-    if (1 != EVP_PKEY_decrypt(ctx, state->sym_key, &state->sym_key_len, state->wrapped_key_text, state->wrapped_key_text_len))
-        return APPLEPAY_ERROR_COULD_NOT_DECRYPT_WRAPPED_KEY;
+        // Actually decrypt
+        if (1 != EVP_PKEY_decrypt(ctx, state->sym_key, &state->sym_key_len, state->wrapped_key_text, state->wrapped_key_text_len)) {
+            rc = APPLEPAY_ERROR_COULD_NOT_DECRYPT_WRAPPED_KEY;
+            break;
+        }
+    } while (0);
 
-    EVP_PKEY_CTX_free(ctx);
+    if (ctx) EVP_PKEY_CTX_free(ctx);
 
     return APPLEPAY_OK;
 }
