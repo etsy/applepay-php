@@ -620,6 +620,7 @@ static int _applepay_verify_signature(applepay_state_t *state) {
         }
         if (OBJ_obj2nid(pkalg) != (state->type == APPLEPAY_TYPE_ECC ? NID_X9_62_id_ecPublicKey : NID_rsaEncryption)) {
             rc = APPLEPAY_ERROR_LEAF_CERT_WRONG_PUBKEY_ALGORITHM;
+            break;
         }
 
         // Ensure signature is correct
