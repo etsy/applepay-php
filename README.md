@@ -27,8 +27,8 @@ token handling endpoint.
 
 ### Demo
 
-Before running the demo, you'll need a merchant certificate and a private key
-from Apple (merch.cer and priv.p12 below). You can generate these at Apple's Dev
+Before running the demo, you'll need a `Payment Processing Certificate` and a private key
+from Apple (apple_pay.cer and priv.p12 below). You can generate these at Apple's Dev
 Center. You'll also need an example payment token generated on an end-user
 device and the timestamp at which it was generated. For more info check out the
 Apple Pay Programming Guide[2].
@@ -36,7 +36,7 @@ Apple Pay Programming Guide[2].
     $ # Copy in your merchant cert, private key, and test token
     $ cd examples
     $ cp /secret/place/priv.p12 .
-    $ cp /secret/place/merch.cer .
+    $ cp /secret/place/apple_pay.cer .
     $ cp /secret/place/token.dat .
     $
     $ # Get intermediate and root certs from Apple
@@ -44,11 +44,11 @@ Apple Pay Programming Guide[2].
     $ wget -O root.cer 'https://www.apple.com/certificateauthority/AppleRootCA-G3.cer'
     $
     $ # Verify chain of trust
-    $ openssl x509 -inform DER -in merch.cer -pubkey > pub.pem
+    $ openssl x509 -inform DER -in apple_pay.cer -pubkey > pub.pem
     $ openssl x509 -inform DER -in root.cer > root.pem
-    $ openssl x509 -inform DER -in int.cer > int_merch.pem
-    $ openssl x509 -inform DER -in merch.cer >> int_merch.pem
-    $ openssl verify -verbose -CAfile root.pem int_merch.pem # should output OK
+    $ openssl x509 -inform DER -in int.cer > int_apple_pay.pem
+    $ openssl x509 -inform DER -in apple_pay.cer >> int_apple_pay.pem
+    $ openssl verify -verbose -CAfile root.pem int_apple_pay.pem # should output OK
     $
     $ # Run demo
     $ cd ..
