@@ -27,9 +27,9 @@ token handling endpoint.
 
 ### Pre-reqs
 
-Before running the demo, you'll need a merchant certificate and a private key
-from Apple (referred to as merch.cer and priv.p12 below). You can generate
-these at Apple's Dev Center. You'll also need an example payment token
+Before running the demo, you'll need a 'Payment Processing Certificate' and a
+private key from Apple (referred to as merch.cer and priv.p12 below). You can
+generate these at Apple's Dev Center. You'll also need an example payment token
 generated on an end-user device and the timestamp at which it was generated. An
 RSA-encrypted token should look like this:
 
@@ -63,7 +63,7 @@ For more info check out the Apple Pay Programming Guide[2].
 
 ### Demo
 
-    $ # Copy in your merchant cert and test token
+    $ # Copy in your payment processing cert and test token
     $ cd examples
     $ cp /secret/place/merch.cer .
     $ cp /secret/place/token.json .
