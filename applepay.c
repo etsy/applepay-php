@@ -861,11 +861,11 @@ static int _applepay_read_merchid(applepay_state_t *state, unsigned char **merch
     }
 
     // Convert to bytes (shave of 2-char prefix and get hex)
-    if (ext->value->length <= 2) {
+    if (ASN1_STRING_length(X509_EXTENSION_get_data(ext)) <= 2) {
         return APPLEPAY_ERROR_MERCHID_TOO_SHORT;
     }
 
-    if (BN_hex2bn(&a, (char *)(ext->value->data + 2)) == 0) {
+    if (BN_hex2bn(&a, (char *)(ASN1_STRING_get0_data(X509_EXTENSION_get_data(ext)) + 2)) == 0) {
         BN_free(a);
         return APPLEPAY_ERROR_FAILED_TO_PARSE_MERCHID;
     }
@@ -910,14 +910,16 @@ static int _applepay_generate_symkey(applepay_state_t *state) {
 
 // Decrypt ciphertext using sym_key
 static int _applepay_decrypt_ciphertext(applepay_state_t *state, char **decrypted, int *decrypted_len) {
-    EVP_CIPHER_CTX ctx;
+    EVP_CIPHER_CTX *ctx;
     const EVP_CIPHER *cipher;
     unsigned char init_vector[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     unsigned char *decrypted_cur = NULL;
     int outlen;
     int rc;
 
-    EVP_CIPHER_CTX_init(&ctx);
+    if (NULL == (ctx = EVP_CIPHER_CTX_new())) {
+        return APPLEPAY_ERROR_COULD_NOT_CREATE_CIPHER_CTX;
+    }
 
     rc = APPLEPAY_OK;
     do {
@@ -927,22 +929,22 @@ static int _applepay_decrypt_ciphertext(applepay_state_t *state, char **decrypte
         } else {
             cipher = EVP_aes_128_gcm();
         }
-        if (EVP_DecryptInit(&ctx, cipher, NULL, NULL) != 1) {
+        if (EVP_DecryptInit(ctx, cipher, NULL, NULL) != 1) {
             rc = APPLEPAY_ERROR_FAILED_TO_INIT_DECRYPT;
             break;
         }
 
         // Set IV length, omit for 96 bits
-        EVP_CIPHER_CTX_ctrl(&ctx, EVP_CTRL_GCM_SET_IVLEN, sizeof(init_vector), NULL);
+        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, sizeof(init_vector), NULL);
 
         // Specify key and IV
-        if (EVP_DecryptInit(&ctx, NULL, state->sym_key, init_vector) != 1) {
+        if (EVP_DecryptInit(ctx, NULL, state->sym_key, init_vector) != 1) {
             rc = APPLEPAY_ERROR_FAILED_TO_INIT_DECRYPT;
             break;
         }
 
         // Alloc space for decrypted payload
-        *decrypted = emalloc(state->ciphertext_len + EVP_CIPHER_CTX_block_size(&ctx) + 1);
+        *decrypted = emalloc(state->ciphertext_len + EVP_CIPHER_CTX_block_size(ctx) + 1);
         decrypted_cur = *decrypted;
         *decrypted_len = 0;
 
@@ -952,17 +954,17 @@ static int _applepay_decrypt_ciphertext(applepay_state_t *state, char **decrypte
             rc = APPLEPAY_ERROR_INVALID_INPUT_CIPHERTEXT_TOO_SHORT;
             break;
         }
-        if (EVP_DecryptUpdate(&ctx, decrypted_cur, &outlen, state->ciphertext, state->ciphertext_len - 16) != 1) {
+        if (EVP_DecryptUpdate(ctx, decrypted_cur, &outlen, state->ciphertext, state->ciphertext_len - 16) != 1) {
             rc = APPLEPAY_ERROR_FAILED_TO_UPDATE_DECRYPT;
             break;
         }
         *decrypted_len += outlen;
 
         // Set expected tag value
-        EVP_CIPHER_CTX_ctrl(&ctx, EVP_CTRL_GCM_SET_TAG, 16, state->ciphertext + state->ciphertext_len - 16);
+        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, state->ciphertext + state->ciphertext_len - 16);
 
         // Finalize: note get no output for GCM
-        if (EVP_DecryptFinal_ex(&ctx, decrypted_cur, &outlen) != 1) {
+        if (EVP_DecryptFinal_ex(ctx, decrypted_cur, &outlen) != 1) {
             rc = APPLEPAY_ERROR_FAILED_TO_DECRYPT;
             break;
         }
@@ -972,7 +974,7 @@ static int _applepay_decrypt_ciphertext(applepay_state_t *state, char **decrypte
         (*decrypted)[*decrypted_len] = 0;
     } while (0);
 
-    EVP_CIPHER_CTX_cleanup(&ctx);
+    EVP_CIPHER_CTX_free(ctx);
 
     return rc;
 }
