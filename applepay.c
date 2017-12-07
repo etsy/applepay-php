@@ -160,6 +160,8 @@ typedef struct {
     size_t         wrapped_key_text_len;
     unsigned char *transaction_id;
     size_t         transaction_id_len;
+    unsigned char *application_data;
+    size_t         application_data_len;
     unsigned char *secret;
     size_t         secret_len;
     unsigned char *sym_key;
@@ -335,6 +337,7 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
     zval *z_wrappedKey = NULL;
     zval *z_publicKeyHash = NULL;
     zval *z_transactionId = NULL;
+    zval *z_applicationData = NULL;
 #if PHP_MAJOR_VERSION >= 7
     zval z_data_stack;
     zval z_header_stack;
@@ -344,6 +347,7 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
     zval z_wrappedKey_stack;
     zval z_publicKeyHash_stack;
     zval z_transactionId_stack;
+    zval z_applicationData_stack;
     z_data = &z_data_stack;
     z_header = &z_header_stack;
     z_signature = &z_signature_stack;
@@ -352,6 +356,7 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
     z_wrappedKey = &z_wrappedKey_stack;
     z_publicKeyHash = &z_publicKeyHash_stack;
     z_transactionId = &z_transactionId_stack;
+    z_applicationData = &z_applicationData_stack;
 #endif
 
     int rc = APPLEPAY_OK;
@@ -400,6 +405,14 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
         APPLEPAY_PARSE_CRYPTOGRAM_STRKEY(ht_header, transactionId, APPLEPAY_ERROR_MISSING_TRANSACTION_ID_KEY);
         #undef APPLEPAY_PARSE_CRYPTOGRAM_STRKEY
 
+        // Get optional applicationData key
+        if (zend_hash_find_compat(ht_header, "applicationData", sizeof("applicationData")-1, &z_applicationData) == SUCCESS) {
+            convert_to_string(z_applicationData);
+        } else {
+            z_applicationData = &z_applicationData_stack;
+            ZVAL_EMPTY_STRING(z_applicationData);
+        }
+
         // Base64 decode stuff
         if (_applepay_b64_decode(Z_STRVAL_P(z_data), Z_STRLEN_P(z_data), &state->ciphertext, &state->ciphertext_len) != APPLEPAY_OK) {
             rc = APPLEPAY_ERROR_COULD_NOT_B64DECODE_CIPHERTEXT;
@@ -419,6 +432,15 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
                 rc = APPLEPAY_ERROR_COULD_NOT_B64DECODE_WRAPPED_KEY;
                 break;
             }
+        }
+        if (Z_STRLEN_P(z_applicationData) > 0) {
+            if (_applepay_b64_decode(Z_STRVAL_P(z_applicationData), Z_STRLEN_P(z_applicationData), &state->application_data, &state->application_data_len) != APPLEPAY_OK) {
+                rc = APPLEPAY_ERROR_COULD_NOT_B64DECODE_APPLICATION_DATA;
+                break;
+            }
+        } else {
+            state->application_data = estrdup("");
+            state->application_data_len = 0;
         }
 
         // Hex decode transaction_id_hex
@@ -631,6 +653,9 @@ static int _applepay_verify_signature(applepay_state_t *state) {
         }
         BIO_write(bio, state->ciphertext, state->ciphertext_len);
         BIO_write(bio, state->transaction_id, state->transaction_id_len);
+        if (state->application_data_len > 0) {
+            BIO_write(bio, state->application_data, state->application_data_len);
+        }
 
         if (!X509_STORE_add_cert(store, state->root_cert)) {
             rc = APPLEPAY_ERROR_COULD_NOT_ADD_ROOT_CERT_TO_STORE;
@@ -957,6 +982,7 @@ static void _applepay_cleanup_state(applepay_state_t *state) {
     if (state->pubkey_hash) efree(state->pubkey_hash);
     if (state->ephemeral_pubkey_text) efree(state->ephemeral_pubkey_text);
     if (state->wrapped_key_text) efree(state->wrapped_key_text);
+    if (state->application_data) efree(state->application_data);
     if (state->transaction_id) efree(state->transaction_id);
     if (state->secret) {
         OPENSSL_cleanse(state->secret, state->secret_len);
