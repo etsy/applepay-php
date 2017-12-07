@@ -25,19 +25,51 @@ token handling endpoint.
     $ # -or- echo 'extension=applepay.so' | sudo tee -a /etc/php.ini
     $ # etc...
 
-### Demo
+### Pre-reqs
 
 Before running the demo, you'll need a merchant certificate and a private key
-from Apple (merch.cer and priv.p12 below). You can generate these at Apple's Dev
-Center. You'll also need an example payment token generated on an end-user
-device and the timestamp at which it was generated. For more info check out the
-Apple Pay Programming Guide[2].
+from Apple (referred to as merch.cer and priv.p12 below). You can generate
+these at Apple's Dev Center. You'll also need an example payment token
+generated on an end-user device and the timestamp at which it was generated. An
+RSA-encrypted token should look like this:
 
-    $ # Copy in your merchant cert, private key, and test token
+    {
+        "data": "<base64>",
+        "header": {
+            "applicationData": "<hex_optional>"
+            "wrappedKey": "<base64>",
+            "publicKeyHash": "<base64>",
+            "transactionId": "<hex>"
+        },
+        "signature": "<base64>",
+        "version": "RSA_v1"
+    }
+
+An ECC-encrypted token should look like this:
+
+    {
+        "data": "<base64>",
+        "header": {
+            "applicationData": "<hex_optional>"
+            "ephemeralPublicKey": "<base64>",
+            "publicKeyHash": "<base64>",
+            "transactionId": "<hex>"
+        },
+        "signature": "<base64>",
+        "version": "ECC_v1"
+    }
+
+For more info check out the Apple Pay Programming Guide[2].
+
+### Demo
+
+    $ # Copy in your merchant cert and test token
     $ cd examples
-    $ cp /secret/place/priv.p12 .
     $ cp /secret/place/merch.cer .
-    $ cp /secret/place/token.dat .
+    $ cp /secret/place/token.json .
+    $
+    $ # Extract private key from cert
+    $ openssl pkcs12 -export -nocerts -inkey merch.key -out priv.p12 -password 'pass:'
     $
     $ # Get intermediate and root certs from Apple
     $ wget -O int.cer 'https://www.apple.com/certificateauthority/AppleAAICAG3.cer'
@@ -52,7 +84,7 @@ Apple Pay Programming Guide[2].
     $
     $ # Run demo
     $ cd ..
-    $ php -denable_dl=on -dextension=`pwd`/modules/applepay.so examples/applepay.php -p <privkey_pass> -c examples/token.dat -t <time_of_transaction>
+    $ php -denable_dl=on -dextension=`pwd`/modules/applepay.so examples/applepay.php -p <privkey_pass> -c examples/token.json -t <time_of_transaction>
 
 If everything goes well you should see decrypted payment data.
 
