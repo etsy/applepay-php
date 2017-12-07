@@ -84,7 +84,7 @@ For more info check out the Apple Pay Programming Guide[2].
     $
     $ # Run demo
     $ cd ..
-    $ php -denable_dl=on -dextension=`pwd`/modules/applepay.so examples/applepay.php -p <privkey_pass> -c examples/token.json -t <time_of_transaction>
+    $ php -denable_dl=on -dextension=`pwd`/modules/applepay.so examples/decrypt.php -p <privkey_pass> -c examples/token.json -t <time_of_transaction>
 
 If everything goes well you should see decrypted payment data.
 
