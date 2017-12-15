@@ -11,7 +11,7 @@ token handling endpoint.
     $ git clone https://github.com/etsy/applepay-php.git
     $ cd applepay-php
     $
-    $ # Install OpenSSL development files
+    $ # Install OpenSSL development files (>= 1.0.2 required)
     $ sudo yum install openssl-devel
     $ # -or- sudo apt-get install libssl-dev
     $ # etc...
