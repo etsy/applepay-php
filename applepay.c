@@ -865,7 +865,11 @@ static int _applepay_read_merchid(applepay_state_t *state, unsigned char **merch
         return APPLEPAY_ERROR_MERCHID_TOO_SHORT;
     }
 
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
     if (BN_hex2bn(&a, (char *)(ASN1_STRING_get0_data(X509_EXTENSION_get_data(ext)) + 2)) == 0) {
+#else
+    if (BN_hex2bn(&a, (char *)(ASN1_STRING_data(X509_EXTENSION_get_data(ext)) + 2)) == 0) {
+#endif
         BN_free(a);
         return APPLEPAY_ERROR_FAILED_TO_PARSE_MERCHID;
     }
