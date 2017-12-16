@@ -56,7 +56,7 @@ An ECC-encrypted token should look like this:
             "transactionId": "<hex>"
         },
         "signature": "<base64>",
-        "version": "ECC_v1"
+        "version": "EC_v1"
     }
 
 For more info check out the Apple Pay Programming Guide[2].
