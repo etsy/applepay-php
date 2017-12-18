@@ -34,7 +34,7 @@ extern zend_module_entry applepay_module_entry;
 #include "TSRM.h"
 #endif
 
-#define PHP_APPLEPAY_VERSION "0.1.3"
+#define PHP_APPLEPAY_VERSION "0.2.1"
 
 typedef enum {
     #define APPLEPAY_CONST_EXPAND(c) c,
