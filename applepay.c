@@ -409,7 +409,9 @@ static int _applepay_parse_cryptogram(zval *z_cryptogram, applepay_state_t *stat
         if (zend_hash_find_compat(ht_header, "applicationData", sizeof("applicationData")-1, &z_applicationData) == SUCCESS) {
             convert_to_string(z_applicationData);
         } else {
-            z_applicationData = &z_applicationData_stack;
+            #if PHP_MAJOR_VERSION >= 7
+                z_applicationData = &z_applicationData_stack;
+            #endif
             ZVAL_EMPTY_STRING(z_applicationData);
         }
 
