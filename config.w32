@@ -1,12 +1,18 @@
 // $Id$
 // vim:ft=javascript
 
-ARG_WITH("applepay", "for applepay support", "no");
+ARG_WITH("applepay", "for applepay support", "no,shared");
 
 if (PHP_APPLEPAY != "no") {
-    if (CHECK_LIB("ssleay32.lib", "applepay") &&
-        CHECK_LIB("libeay32.lib", "applepay") &&
-        CHECK_LIB("crypt32.lib", "applepay")) {
+    if (CHECK_LIB("libcrypto.lib", "applepay") && CHECK_LIB("libssl.lib", "applepay")) {
         EXTENSION("applepay", "applepay.c");
+    } else {
+        if (CHECK_LIB("ssleay32.lib", "applepay") &&
+            CHECK_LIB("libeay32.lib", "applepay") &&
+            CHECK_LIB("crypt32.lib", "applepay")) {
+            EXTENSION("applepay", "applepay.c");
+        } else {
+            WARNING("applepay support can't be enabled, libraries or headers are missing");
+        }
     }
 }
